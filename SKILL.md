@@ -59,7 +59,7 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
 
 First-time install lives in `install.md` (clone, deps, ffmpeg, skill registration, transcription setup). Don't re-run it every session; on cold start just verify:
 
-- A transcription engine resolves: `ELEVENLABS_API_KEY` or `VIDEO_USE_TRANSCRIBER=local`, in the environment or in `.env` at the video-use repo root (`.env` wins). If neither is set, ask the user once whether to paste an ElevenLabs key or use the local engine (`install.md` step 5) and write the answer to `.env` (never to the user's `<videos_dir>`). Never fall back from one engine to the other silently.
+- A transcription engine resolves: `ELEVENLABS_API_KEY`, `VIDEO_USE_TRANSCRIBER=local`, or `VIDEO_USE_TRANSCRIBER=funasr`, in the environment or in `.env` at the video-use repo root (`.env` wins). If none is set, ask the user once which engine they want (an ElevenLabs key, local Whisper, or local FunASR; `install.md` step 5) and write the answer to `.env` (never to the user's `<videos_dir>`). Never fall back from one engine to another silently.
 - `ffmpeg` + `ffprobe` on PATH.
 - Python deps installed (`uv sync` or `pip install -e .` inside the repo).
 - Node.js + npm available if the session needs HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.
@@ -77,13 +77,18 @@ With `VIDEO_USE_TRANSCRIBER=local`, `transcribe.py` runs Whisper large-v3-turbo 
 - Word ends are as accurate as Scribe's; word starts are trimmed to the first audible energy so pauses are not folded into the next word. Keep the Hard Rule 7 padding either way.
 - The first run downloads about 1.6 GB of pinned weights; every later run is offline.
 
+### FunASR transcription (Chinese)
+
+With `VIDEO_USE_TRANSCRIBER=funasr`, `transcribe.py` runs the FunASR Paraformer stack locally — Paraformer-Large ASR with VAD and punctuation, CAM++ speaker diarization, and hotwords. Unlike the Whisper local engine it returns `speaker_id` and explicit `spacing`, and it is the right default for Chinese / mixed-language footage; use Whisper for English. Characters are grouped into words with jieba so the transcript keeps the same shape. First run downloads about 1 GB of weights. Full setup, model list, and limits: `references/funasr-engine.md`.
+
 Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this SKILL.md. Resolve their paths relative to the directory containing this file — the skill is typically symlinked at `~/.claude/skills/video-use/` or `~/.codex/skills/video-use/`.
 
 ## Helpers
 
-- **`transcribe.py <video>`** — single-file transcription with ElevenLabs Scribe or the local engine (`--engine`; default from `VIDEO_USE_TRANSCRIBER`, else Scribe when a key resolves). Prints the engine it used. `--num-speakers N` optional (Scribe only). Cached; `--force` redoes.
-- **`transcribe_batch.py <videos_dir>`** — 4-worker parallel transcription (one worker with the local engine). Use for multi-take.
+- **`transcribe.py <video>`** — single-file transcription with ElevenLabs Scribe, local Whisper, or local FunASR (`--engine elevenlabs|local|funasr`; default from `VIDEO_USE_TRANSCRIBER`, else Scribe when a key resolves). Prints the engine it used. `--num-speakers N` (Scribe/FunASR) and `--hotwords "..."` (FunASR) optional. Cached; `--force` redoes.
+- **`transcribe_batch.py <videos_dir>`** — 4-worker parallel transcription (one worker with either local engine). Use for multi-take.
 - **`local_stt.py probe`** — hardware probe for the local engine: which Whisper library this machine uses, whether it is installed, model size, free disk, install command. Run it before choosing local.
+- **`funasr_stt.py transcribe <audio.wav> -o <out.json>`** — local FunASR Chinese engine used by `transcribe.py --engine funasr`; `--hotwords` optional. See `references/funasr-engine.md`.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
@@ -320,8 +325,8 @@ Things that consistently fail regardless of style:
 
 - **Hierarchical pre-computed codec formats** with USABILITY / tone tags / shot layers. Over-engineering. Derive from the transcript at decision time.
 - **Hand-tuned moment-scoring functions.** The LLM picks better than any heuristic you'll write.
-- **Phrase-level ASR output (SRT, the plain `whisper` CLI).** Loses sub-second gap data. Always word-level; `local_stt.py` is the only approved local path.
-- **Treating a local transcript like a Scribe one.** No speaker labels, no audio events, fillers only best effort. Read the `engine` key and plan the cut accordingly.
+- **Phrase-level ASR output (SRT, the plain `whisper` CLI).** Loses sub-second gap data. Always word-level; local Whisper goes through `local_stt.py`, local Chinese through `funasr_stt.py`.
+- **Treating a local transcript like a Scribe one.** The Whisper local engine has no speaker labels or audio events; FunASR has speaker labels and spacing but no audio events. Read the `engine` key and plan the cut accordingly.
 - **Burning subtitles into base before compositing overlays.** Overlays hide them. (Hard Rule 1.)
 - **Single-pass filtergraph when you have overlays.** Double re-encodes. Use per-segment extract → concat.
 - **Linear animation easing.** Looks robotic. Always cubic.

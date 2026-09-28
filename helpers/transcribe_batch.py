@@ -26,8 +26,10 @@ from pathlib import Path
 from transcribe import (
     add_engine_arguments,
     announce_engine,
+    funasr_options_from,
     load_env,
     local_options_from,
+    preflight_funasr,
     preflight_local,
     resolve_engine,
     transcribe_one,
@@ -47,9 +49,9 @@ def find_videos(videos_dir: Path) -> list[Path]:
     return videos
 
 
-# the local engine holds one model per process so more than one worker only contends
+# the local engines hold one model per process so more than one worker only contends
 def worker_count(engine: str, requested: int) -> int:
-    return 1 if engine == "local" else requested
+    return 1 if engine in ("local", "funasr") else requested
 
 
 # cli entry point that splits videos into cached and pending sets then transcribes the pending ones in parallel
@@ -73,7 +75,7 @@ def main() -> None:
         "--num-speakers",
         type=int,
         default=None,
-        help="Optional number of speakers. Improves diarization when known (elevenlabs only).",
+        help="Optional number of speakers. Improves diarization when known (elevenlabs/funasr).",
     )
     ap.add_argument(
         "--audio-track",
@@ -114,8 +116,11 @@ def main() -> None:
 
     # settle the local library once here so a missing install exits with its message instead of failing every worker
     local_options = local_options_from(args)
+    funasr_options = funasr_options_from(args)
     if engine == "local":
         preflight_local(local_options)
+    elif engine == "funasr":
+        preflight_funasr()
 
     workers = worker_count(engine, args.workers)
     if workers != args.workers:

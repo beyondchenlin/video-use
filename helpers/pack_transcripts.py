@@ -17,8 +17,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_PUNCT_CHARS = set(",.!?:;，。！？、；：")
+
+
+# join phrase words adding spaces only where the language needs them so adjacent chinese words stay tight
+def join_words(parts: list[str]) -> str:
+    out = ""
+    for part in parts:
+        if not out:
+            out = part
+            continue
+        # a standalone punctuation token glues onto the preceding word
+        if len(part) == 1 and not part.isalnum():
+            out += part
+            continue
+        # compare the nearest non punctuation character on each side
+        left = next((c for c in reversed(out) if c not in _PUNCT_CHARS), out[-1])
+        right = next((c for c in part if c not in _PUNCT_CHARS), part[0])
+        if _CJK_RE.match(left) and _CJK_RE.match(right):
+            out += part
+        else:
+            out += " " + part
+    return out
 
 
 # render seconds as a zero padded fixed width string so stamps line up in columns
@@ -75,9 +101,7 @@ def group_into_phrases(
             current_start = None
             current_speaker = None
             return
-        text = " ".join(text_parts)
-        # glue punctuation tokens back onto the preceding word
-        text = text.replace(" ,", ",").replace(" .", ".").replace(" ?", "?").replace(" !", "!")
+        text = join_words(text_parts)
         # fall back through end then start then phrase start so a missing timestamp cannot break the flush
         end_time = current_words[-1].get("end", current_words[-1].get("start", current_start or 0.0))
         phrases.append({

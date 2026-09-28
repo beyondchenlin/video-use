@@ -18,6 +18,8 @@ animations = ["manim"]
 stt-mlx = ["mlx-whisper>=0.4.3"]
 stt-cpu = ["faster-whisper>=1.2.1"]
 stt-cuda = ["faster-whisper>=1.2.1", "nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9"]
+# local Chinese transcription: FunASR Paraformer + CAM++ speaker diarization
+stt-funasr = ["funasr>=1.4.9", "modelscope", "torch", "torchaudio", "jieba"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

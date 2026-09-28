@@ -1,6 +1,6 @@
 ---
 name: video-use-install
-description: Install video-use into the current agent (Claude Code, Codex, Hermes, Openclaw, etc.) and wire up ffmpeg plus transcription (an ElevenLabs API key or the local Whisper engine) so the user can start editing immediately.
+description: Install video-use into the current agent (Claude Code, Codex, Hermes, Openclaw, etc.) and wire up ffmpeg plus transcription (an ElevenLabs API key, the local Whisper engine, or the local FunASR engine for Chinese) so the user can start editing immediately.
 ---
 
 # video-use install
@@ -15,7 +15,7 @@ Three things must exist on this machine:
 
 1. The `video-use` repo cloned somewhere stable.
 2. `ffmpeg` on `$PATH` (plus optional `yt-dlp` for online sources).
-3. Transcription configured in `.env` at the repo root: an ElevenLabs API key for Scribe, or `VIDEO_USE_TRANSCRIBER=local` with one Whisper library installed.
+3. Transcription configured in `.env` at the repo root: an ElevenLabs API key for Scribe, `VIDEO_USE_TRANSCRIBER=local` with a Whisper library, or `VIDEO_USE_TRANSCRIBER=funasr` with the FunASR stack.
 
 And one thing must be true about the current agent:
 
@@ -91,19 +91,22 @@ If you can't tell which agent you're in, ask the user once: "which agent am I ru
 
 ### 5. Transcription: ElevenLabs key or local engine
 
-Every edit starts from a word-level transcript. Two engines can produce it:
+Every edit starts from a word-level transcript. Three engines can produce it:
 
 - **ElevenLabs Scribe** (hosted, needs an API key): word timestamps, speaker labels, audio events such as `(laughter)`, verbatim fillers. Best quality; costs credits.
-- **Local Whisper** (`helpers/local_stt.py`, no key): word timestamps only, runs on the user's machine after a one-time ~1.6 GB model download. No speaker labels or audio events; fillers are best effort.
+- **Local Whisper** (`helpers/local_stt.py`, no key): word timestamps only, runs on the user's machine after a one-time ~1.6 GB model download. No speaker labels or audio events; fillers are best effort. Best for English.
+- **Local FunASR** (`helpers/funasr_stt.py`, no key): Paraformer Chinese ASR with CAM++ speaker labels, hotwords, and explicit spacing, after a one-time ~1 GB download. Best for Chinese. Setup and limits: `references/funasr-engine.md`.
 
-Configuration is one line in `~/Developer/video-use/.env`: either `ELEVENLABS_API_KEY=...` or `VIDEO_USE_TRANSCRIBER=local`. Values in `.env` win over exported environment variables, and every transcription run prints which engine it used and why, so the choice is never silent.
+Configuration is one line in `~/Developer/video-use/.env`: `ELEVENLABS_API_KEY=...`, `VIDEO_USE_TRANSCRIBER=local`, or `VIDEO_USE_TRANSCRIBER=funasr`. Values in `.env` win over exported environment variables, and every transcription run prints which engine it used and why, so the choice is never silent.
 
 1. Check existing state in this order and stop at the first hit:
 
     ```bash
-    # a) local engine already chosen in .env or exported (either one wins over a key at runtime)
-    grep -q '^VIDEO_USE_TRANSCRIBER=local' ~/Developer/video-use/.env 2>/dev/null && echo "local (.env)"
-    [ "$VIDEO_USE_TRANSCRIBER" = "local" ] && echo "local (env)"
+    # a) a local engine already chosen in .env or exported (it wins over a key at runtime)
+    grep -q '^VIDEO_USE_TRANSCRIBER=local' ~/Developer/video-use/.env 2>/dev/null && echo "local whisper (.env)"
+    grep -q '^VIDEO_USE_TRANSCRIBER=funasr' ~/Developer/video-use/.env 2>/dev/null && echo "local funasr (.env)"
+    [ "$VIDEO_USE_TRANSCRIBER" = "local" ] && echo "local whisper (env)"
+    [ "$VIDEO_USE_TRANSCRIBER" = "funasr" ] && echo "local funasr (env)"
     # b) key already exported
     [ -n "$ELEVENLABS_API_KEY" ] && echo "env"
     # c) .env at repo root already has a key
@@ -112,7 +115,7 @@ Configuration is one line in `~/Developer/video-use/.env`: either `ELEVENLABS_AP
 
 2. If nothing is set, ask the user exactly once:
 
-    > Transcription needs either an ElevenLabs API key (best quality: word timestamps, speaker labels, laughter/applause tags — grab one at https://elevenlabs.io/app/settings/api-keys and paste it here) or a local Whisper model (free, runs on this machine, word timestamps only, one-time ~1.6 GB download). Which do you want? If you already have the key exported as `ELEVENLABS_API_KEY`, say "use env".
+    > Transcription needs one of three: an ElevenLabs API key (hosted, word timestamps, speaker labels, laughter/applause tags — grab one at https://elevenlabs.io/app/settings/api-keys and paste it here); a local Whisper model (free, word timestamps only, one-time ~1.6 GB download, best for English); or a local FunASR model (free, Chinese ASR with speaker labels and hotwords, one-time ~1 GB download, best for Chinese). Which do you want? If you already have the key exported as `ELEVENLABS_API_KEY`, say "use env".
 
 3. **If the user pastes a key**, write it to `~/Developer/video-use/.env`:
 
@@ -155,6 +158,17 @@ Configuration is one line in `~/Developer/video-use/.env`: either `ELEVENLABS_AP
     ```
 
     The model weights download on the first transcription into the standard Hugging Face cache (`~/.cache/huggingface`, or `HF_HOME`), pinned to a fixed revision. Warn the user that the first clip takes a few extra minutes.
+
+5. **If the user chooses FunASR** (best for Chinese), install the extra then persist the choice:
+
+    ```bash
+    cd ~/Developer/video-use
+    uv sync --extra stt-funasr        # or: pip install -e '.[stt-funasr]'
+    printf 'VIDEO_USE_TRANSCRIBER=funasr\n' >> ~/Developer/video-use/.env
+    chmod 600 ~/Developer/video-use/.env
+    ```
+
+    The first transcription downloads about 1 GB of Paraformer, VAD, punctuation, and CAM++ weights through ModelScope; later runs are offline. Pass names or terms with `--hotwords "人名 术语"`. Full details: `references/funasr-engine.md`.
 
 ### 6. Verify end-to-end
 
@@ -205,5 +219,5 @@ Tell the user, in one short message:
 - Node.js/npm are only needed for HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.
 - HyperFrames, Remotion, and Manim are optional animation engines. Don't install or prefer one globally during setup; pick the engine per animation slot in `SKILL.md`. HyperFrames can run through `npx --yes hyperframes ...` in the slot directory. Remotion can be scaffolded with `npx create-video@latest` or installed inside the slot before rendering.
 - Never run a Scribe transcription as part of install verification unless the user explicitly asks — it costs real money. The local engine is free to verify; the synthetic clip in step 6 is the right check.
-- `VIDEO_USE_TRANSCRIBER` is the only transcription setting. Which Whisper library runs is decided by `helpers/local_stt.py probe`, not by the user, and never belongs in `.env`.
+- `VIDEO_USE_TRANSCRIBER` selects the engine (`local` for Whisper, `funasr` for Chinese). Which Whisper library runs is decided by `helpers/local_stt.py probe`, not by the user; the only thing that belongs in `.env` is the engine name.
 - If the user is on Linux without a package manager Claude recognizes, print the manual `ffmpeg` install URL and wait rather than guessing.

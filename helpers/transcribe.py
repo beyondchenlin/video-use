@@ -40,7 +40,7 @@ import requests
 
 
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
-ENGINES = ("elevenlabs", "local")
+ENGINES = ("elevenlabs", "local", "funasr")
 ENV_NAMES = ("ELEVENLABS_API_KEY", "VIDEO_USE_TRANSCRIBER")
 
 
@@ -105,7 +105,8 @@ def resolve_engine(flag: str | None, env: dict[str, tuple[str, str]]) -> tuple[s
     raise SystemExit(
         "no transcription engine configured. Add one line to .env at the video-use repo root:\n"
         "  ELEVENLABS_API_KEY=<your key>        hosted Scribe transcription\n"
-        "  VIDEO_USE_TRANSCRIBER=local         local Whisper, run helpers/local_stt.py probe first"
+        "  VIDEO_USE_TRANSCRIBER=local         local Whisper (best for English), run helpers/local_stt.py probe\n"
+        "  VIDEO_USE_TRANSCRIBER=funasr        local FunASR (best for Chinese), pip install -e '.[stt-funasr]'"
     )
 
 
@@ -207,6 +208,27 @@ def call_local(audio_path: Path, language: str | None, local_options: dict) -> d
     )
 
 
+# make sure funasr is installed before any audio is extracted
+def preflight_funasr() -> None:
+    import funasr_stt
+
+    funasr_stt.preflight()
+
+
+# run the local funasr engine on the extracted wav best for chinese
+def call_funasr(audio_path: Path, language: str | None, funasr_options: dict) -> dict:
+    # imported here so the other paths never need funasr or torch
+    import funasr_stt
+
+    return funasr_stt.transcribe_wav(
+        audio_path,
+        language=language,
+        hotwords=funasr_options.get("hotwords", ""),
+        num_speakers=funasr_options.get("num_speakers"),
+        model=funasr_options.get("model"),
+    )
+
+
 # resolve where a transcript lands with the track number in the name for anything but track zero
 def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
     """Where a video's transcript lands.
@@ -244,6 +266,7 @@ def transcribe_one(
     engine: str = "elevenlabs",
     force: bool = False,
     local_options: dict | None = None,
+    funasr_options: dict | None = None,
 ) -> Path:
     """Transcribe a single video. Returns path to transcript JSON.
 
@@ -274,6 +297,8 @@ def transcribe_one(
     # a missing local library must fail here not after minutes of audio extraction
     if engine == "local":
         preflight_local(local_options or {})
+    elif engine == "funasr":
+        preflight_funasr()
 
     if verbose:
         print(f"  extracting audio from {video.name}", flush=True)
@@ -307,6 +332,10 @@ def transcribe_one(
             payload = call_scribe(audio, api_key, language, num_speakers)
             if isinstance(payload, dict):
                 payload["engine"] = "elevenlabs"
+        elif engine == "funasr":
+            if verbose:
+                print(f"  transcribing {video.stem}.wav ({size_mb:.1f} MB) with FunASR locally", flush=True)
+            payload = call_funasr(audio, language, funasr_options or {})
         else:
             if verbose:
                 print(f"  transcribing {video.stem}.wav ({size_mb:.1f} MB) locally", flush=True)
@@ -333,24 +362,30 @@ def add_engine_arguments(ap: argparse.ArgumentParser) -> None:
         "--engine",
         choices=ENGINES,
         default=None,
-        help="elevenlabs or local. Default: VIDEO_USE_TRANSCRIBER, else elevenlabs when a key resolves.",
+        help="elevenlabs, local (Whisper, best for English) or funasr (best for Chinese). "
+             "Default: VIDEO_USE_TRANSCRIBER, else elevenlabs when a key resolves.",
     )
     ap.add_argument("--force", action="store_true", help="Re-transcribe even when a transcript is cached.")
     ap.add_argument(
         "--library",
         choices=("mlx-whisper", "faster-whisper"),
         default=None,
-        help="Local engine only: override the library chosen by the hardware probe.",
+        help="local engine only: override the library chosen by the hardware probe.",
     )
     ap.add_argument(
         "--model",
         default=None,
-        help="Local engine only: Hugging Face repo id or local model directory.",
+        help="local/funasr engine: model id or local model directory.",
     )
     ap.add_argument(
         "--no-verbatim-prompt",
         action="store_true",
-        help="Local engine only: disable the filler-preserving prompt.",
+        help="local engine only: disable the filler-preserving prompt.",
+    )
+    ap.add_argument(
+        "--hotwords",
+        default="",
+        help="funasr engine only: hotwords (names, terms) separated by spaces.",
     )
 
 
@@ -360,6 +395,15 @@ def local_options_from(args: argparse.Namespace) -> dict:
         "library": args.library,
         "model": args.model,
         "verbatim": not args.no_verbatim_prompt,
+    }
+
+
+# gather the funasr engine options from parsed arguments
+def funasr_options_from(args: argparse.Namespace) -> dict:
+    return {
+        "hotwords": args.hotwords,
+        "num_speakers": args.num_speakers,
+        "model": args.model,
     }
 
 
@@ -383,7 +427,7 @@ def main() -> None:
         "--num-speakers",
         type=int,
         default=None,
-        help="Optional number of speakers when known. Improves diarization accuracy (elevenlabs only).",
+        help="Optional number of speakers when known. Improves diarization accuracy (elevenlabs/funasr).",
     )
     ap.add_argument(
         "--audio-track",
@@ -418,6 +462,7 @@ def main() -> None:
         audio_track=args.audio_track,
         force=args.force,
         local_options=local_options_from(args),
+        funasr_options=funasr_options_from(args),
     )
 
 

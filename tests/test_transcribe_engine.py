@@ -114,13 +114,20 @@ class ResolveEngineTests(unittest.TestCase):
         self.assertEqual(engine, "elevenlabs")
         self.assertIn("ELEVENLABS_API_KEY", source)
 
-    # nothing configured exits naming both options
-    def test_nothing_configured_exits_with_both_options(self):
+    # nothing configured exits naming all three options
+    def test_nothing_configured_exits_with_options(self):
         with self.assertRaises(SystemExit) as ctx:
             transcribe.resolve_engine(None, {})
         message = str(ctx.exception)
         self.assertIn("ELEVENLABS_API_KEY=", message)
         self.assertIn("VIDEO_USE_TRANSCRIBER=local", message)
+        self.assertIn("VIDEO_USE_TRANSCRIBER=funasr", message)
+
+    # the funasr setting resolves to the funasr engine
+    def test_funasr_setting_resolves(self):
+        engine, source = transcribe.resolve_engine(None, env_with(VIDEO_USE_TRANSCRIBER="funasr"))
+        self.assertEqual(engine, "funasr")
+        self.assertEqual(source, "test")
 
     # a bad setting or flag exits before any subprocess runs
     def test_invalid_values_exit_before_work(self):
@@ -194,6 +201,24 @@ class TranscribeOneTests(unittest.TestCase):
                 transcribe.transcribe_one(self.video, self.edit_dir, engine="local")
         self.assertFalse(self.out.exists())
 
+    # the funasr path never touches the network and records the engine
+    def test_funasr_path_never_posts(self):
+        fake = {"engine": "funasr", "library": "funasr", "model": "m", "language_code": "zh", "text": "你好", "words": []}
+        with patch.object(transcribe.requests, "post", side_effect=AssertionError("posted")), \
+             patch.object(transcribe, "preflight_funasr", lambda: None), \
+             patch.object(transcribe, "call_funasr", lambda *_args, **_kw: fake):
+            with contextlib.redirect_stdout(io.StringIO()):
+                transcribe.transcribe_one(self.video, self.edit_dir, engine="funasr")
+        self.assertEqual(json.loads(self.out.read_text())["engine"], "funasr")
+
+    # a missing funasr install stops the run before any audio is extracted
+    def test_missing_funasr_fails_before_extraction(self):
+        with patch.object(transcribe, "preflight_funasr", side_effect=SystemExit("install it")), \
+             patch.object(transcribe, "extract_audio", side_effect=AssertionError("extracted")):
+            with self.assertRaises(SystemExit):
+                transcribe.transcribe_one(self.video, self.edit_dir, engine="funasr")
+        self.assertFalse(self.out.exists())
+
     # callers from before the engine flag still pass the key as the third positional argument
     def test_legacy_positional_api_key(self):
         with patch.object(transcribe.requests, "post", return_value=FakeResponse()) as post:
@@ -247,9 +272,10 @@ class TranscribeOneTests(unittest.TestCase):
 
 # batch specific behavior
 class BatchTests(unittest.TestCase):
-    # the local engine runs one file at a time whatever was requested
+    # the local engines run one file at a time whatever was requested
     def test_local_engine_forces_one_worker(self):
         self.assertEqual(transcribe_batch.worker_count("local", 4), 1)
+        self.assertEqual(transcribe_batch.worker_count("funasr", 4), 1)
         self.assertEqual(transcribe_batch.worker_count("elevenlabs", 4), 4)
 
 
