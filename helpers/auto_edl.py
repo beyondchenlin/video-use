@@ -30,7 +30,7 @@ JOIN_GAP = 0.35
 EDGE_PAD = 0.06
 
 # merge any range shorter than this back into a neighbor
-MIN_SEG = 0.25
+MIN_SEG = 1.0
 
 _STRIP = " ，。！？、；：,.!?;:…—\"'“”‘’（）()【】《》\n"
 
@@ -99,6 +99,11 @@ def build_edl(
     transcript: dict, source_name: str, source_video: str, grade: str | None = None
 ) -> dict:
     intervals = build_intervals(transcript.get("words") or [])
+    if not intervals:
+        raise ValueError(
+            "no usable ranges: every word was a filler, or the transcript has no "
+            "word-level timings. Check the transcript, the language, or the filler sets."
+        )
     ranges = [
         {
             "source": source_name,
@@ -135,9 +140,12 @@ def main() -> None:
     args = ap.parse_args()
 
     transcript = json.loads(args.transcript.read_text(encoding="utf-8"))
-    edl = build_edl(
-        transcript, args.source_name, args.source_video, grade=args.grade
-    )
+    try:
+        edl = build_edl(
+            transcript, args.source_name, args.source_video, grade=args.grade
+        )
+    except ValueError as exc:
+        sys.exit(str(exc))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
     print(

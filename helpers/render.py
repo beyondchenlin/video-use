@@ -645,6 +645,13 @@ def apply_loudnorm_two_pass(
     return True
 
 
+# normalize the composited audio to the social target then drop the prenorm file
+def normalize_final(composite_path: Path, out_path: Path, preview: bool) -> None:
+    print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
+    apply_loudnorm_two_pass(composite_path, out_path, preview=preview)
+    composite_path.unlink(missing_ok=True)
+
+
 # -------- Final compositing (Rule 1 + Rule 4) -------------------------------
 
 
@@ -657,17 +664,29 @@ def build_final_composite(
     edit_dir: Path,
     force_style: str = SUB_FORCE_STYLE,
     codec: str = "libx264",
+    loudnorm: bool = False,
+    loudnorm_preview: bool = False,
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
 
     If there are no overlays and no subtitles, just copy base to out.
+    With loudnorm the composite lands in a temporary prenorm file and the audio
+    is normalized to the social target before the final file is written. Callers
+    that already normalize elsewhere pass loudnorm=False.
     """
     has_overlays = bool(overlays)
     has_subs = subtitles_path is not None and subtitles_path.exists()
 
+    # loudnorm re-encodes the audio so the composite is a separate temporary file
+    composite_path = out_path
+    if loudnorm:
+        composite_path = out_path.with_name(out_path.stem + ".prenorm.mp4")
+
     if not has_overlays and not has_subs:
         # Nothing to do — just rename/copy base to final name
-        run(["ffmpeg", "-y", "-i", str(base_path), "-c", "copy", str(out_path)], quiet=True)
+        run(["ffmpeg", "-y", "-i", str(base_path), "-c", "copy", str(composite_path)], quiet=True)
+        if loudnorm:
+            normalize_final(composite_path, out_path, loudnorm_preview)
         return
 
     inputs: list[str] = ["-i", str(base_path)]
@@ -725,11 +744,14 @@ def build_final_composite(
         "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
-        str(out_path),
+        str(composite_path),
     ]
-    print(f"compositing → {out_path.name}")
+    print(f"compositing → {composite_path.name}")
     print(f"  overlays: {len(overlays)}, subtitles: {'yes' if has_subs else 'no'}")
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    if loudnorm:
+        normalize_final(composite_path, out_path, loudnorm_preview)
 
 
 # -------- Main ---------------------------------------------------------------
@@ -810,18 +832,12 @@ def main() -> None:
                 print(f"warning: subtitles path in EDL does not exist: {subs_path}")
                 subs_path = None
 
-    # 4. Composite (overlays + subtitles LAST) → intermediate (pre-loudnorm) path
+    # 4. Composite (overlays + subtitles LAST) then optional loudness normalization
     overlays = edl.get("overlays") or []
-    if args.no_loudnorm:
-        # Composite directly to final output
-        build_final_composite(base_path, overlays, subs_path, out_path, edit_dir)
-    else:
-        # Composite to a temp file, then run loudnorm → final output
-        tmp_composite = out_path.with_suffix(".prenorm.mp4")
-        build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir)
-        print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
-        apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
-        tmp_composite.unlink(missing_ok=True)
+    build_final_composite(
+        base_path, overlays, subs_path, out_path, edit_dir,
+        loudnorm=not args.no_loudnorm, loudnorm_preview=args.draft,
+    )
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(f"\ndone: {out_path} ({size_mb:.1f} MB)")

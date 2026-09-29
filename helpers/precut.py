@@ -123,6 +123,22 @@ def precut(
     return output
 
 
+# resolve the output path from a file or directory argument
+def resolve_output_path(video: Path, output: str | None) -> Path:
+    if not output:
+        return video.with_name(video.stem + ".precut.mp4")
+    candidate = Path(output)
+    # an existing directory a trailing separator or a bare name counts as a directory
+    is_directory = (
+        candidate.is_dir()
+        or output.endswith(("\\", "/"))
+        or candidate.suffix == ""
+    )
+    if is_directory:
+        return candidate / (video.stem + ".precut.mp4")
+    return candidate
+
+
 # cli entry point that pre cuts one video and reports the output path
 def main() -> None:
     ap = argparse.ArgumentParser(description="Pre-cut a video before transcription")
@@ -147,12 +163,7 @@ def main() -> None:
     if not video.exists():
         sys.exit(f"no input video at {video}")
 
-    if args.output:
-        out_path = Path(args.output)
-        if out_path.is_dir() or args.output.endswith(("\\", "/")):
-            out_path = out_path / (video.stem + ".precut.mp4")
-    else:
-        out_path = video.with_name(video.stem + ".precut.mp4")
+    out_path = resolve_output_path(video, args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     use_gpu = not args.no_gpu and nvidia_available()

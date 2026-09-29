@@ -14,6 +14,8 @@ dependencies = [
 
 [project.optional-dependencies]
 animations = ["manim"]
+# test runner; the suite also runs with the stdlib unittest discover command
+dev = ["pytest>=7"]
 # local transcription: one of these per machine, chosen by helpers/local_stt.py probe
 stt-mlx = ["mlx-whisper>=0.4.3"]
 stt-cpu = ["faster-whisper>=1.2.1"]

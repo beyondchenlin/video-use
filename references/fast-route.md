@@ -30,9 +30,14 @@ Four ideas, taken from the FunClip stage pipeline:
 3. `auto_edl.py` — deterministic EDL: drop standalone filler words and long
    silences, keep natural short pauses, pad word edges, merge tiny fragments.
 4. `render.py` — per-segment extract and lossless concat into `base.mp4`.
-5. Re-transcribe `base.mp4` (model is cached in the same process) and build a
-   sentence-aligned SRT.
-6. Burn subtitles last into `final.mp4`.
+5. Build a sentence-aligned SRT. By default `base.mp4` is re-transcribed
+   (model is cached in the same process) and the two passes are compared; the
+   recheck transcript is burned and any sentence where the passes disagree is
+   printed to the log. With `--no-recheck` the base is not re-transcribed: the
+   first-pass words are mapped onto the output timeline instead
+   (`word.start - segment_start + segment_offset`, Rule 5).
+6. Burn subtitles last into `final.mp4` and normalize loudness to
+   -14 LUFS / -1 dBTP / LRA 11 (`render.normalize_final`, two-pass).
 
 ## Key parameters
 
@@ -46,6 +51,8 @@ re-tune them blindly.
 - `auto_edl.py`: filler sets defined in the file; `JOIN_GAP 0.35`, `EDGE_PAD
   0.06`, `MIN_SEG 1.0`
 - final nvenc: `-preset p6 -tune hq -rc vbr -cq 21 -b:v 0`, `-pix_fmt yuv420p`
+- final audio: two-pass `loudnorm` to `I=-14 TP=-1 LRA=11` (same constants as
+  the conversational renderer); the fast lane runs the same shared helper
 
 The renderer keeps `libx264` as the portable default; nvenc is selected only on
 machines where the encoder is advertised.
@@ -56,6 +63,8 @@ machines where the encoder is advertised.
 python helpers/fast_pipeline.py <video>
 python helpers/fast_pipeline.py <video> --engine funasr --fps 30
 python helpers/fast_pipeline.py <video> --edit-dir /path/to/edit
+python helpers/fast_pipeline.py <video> --no-recheck      # map the first pass instead of re-transcribing
+python helpers/fast_pipeline.py <video> --caption-margin 60
 ```
 
 Outputs land in `<video_parent>/edit/` (or `--edit-dir`): `edl.json`,
@@ -81,3 +90,9 @@ and `final.mp4`.
   autorotate step prevents a sideways result.
 - **Subtitle breaks are heuristic.** Sentence cues split on punctuation, long
   gaps, and a length cap; line breaks may land earlier than a hand-made SRT.
+- **No human proofreading.** ASR errors are burned straight into the picture.
+  The default recheck pass only logs where the two transcriptions disagree; it
+  never corrects them. Use the conversational route when wording matters.
+- **One subtitle margin for every frame.** `--caption-margin` (default 90)
+  keeps captions inside the vertical-platform safe zone; lower it only for a
+  cut that is meant to be watched full-frame.
