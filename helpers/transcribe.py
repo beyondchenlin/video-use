@@ -343,7 +343,9 @@ def transcribe_one(
 
     # write beside the target and swap in so a failed run never destroys the old transcript
     tmp_path = out_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2))
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     os.replace(tmp_path, out_path)
     dt = time.time() - t0
 

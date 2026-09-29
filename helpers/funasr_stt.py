@@ -155,10 +155,38 @@ def join_text(words: list[dict]) -> str:
 _MODEL = None
 
 
+# pick cuda when a gpu is available and fall back to cpu everywhere else
+def detect_device() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+# turn on offline hub mode once every configured model is already cached locally
+def enable_offline_if_cached() -> bool:
+    import os
+
+    roots = [Path.home() / ".cache" / "modelscope" / "models"]
+    env_root = os.environ.get("MODELSCOPE_CACHE")
+    if env_root:
+        roots.insert(0, Path(env_root) / "models")
+    needed = [mid.replace("/", "--") for mid in MODEL_IDS.values()]
+    if all(any((root / name).exists() for root in roots) for name in needed):
+        os.environ.setdefault("MODELSCOPE_OFFLINE", "1")
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        return True
+    return False
+
+
 # load the paraformer vad punctuation and speaker models once and cache them
-def get_model(model_path: str | None = None):
+def get_model(model_path: str | None = None, device: str | None = None):
     global _MODEL
     if _MODEL is None:
+        enable_offline_if_cached()
         from funasr import AutoModel
 
         kwargs = dict(
@@ -166,6 +194,7 @@ def get_model(model_path: str | None = None):
             vad_model=MODEL_IDS["vad"],
             punc_model=MODEL_IDS["punc"],
             spk_model=MODEL_IDS["spk"],
+            device=device or detect_device(),
             disable_update=True,
         )
         _MODEL = AutoModel(**kwargs)

@@ -208,6 +208,34 @@ def parse_fps(value: str) -> str:
     return f"{rate.numerator}/{rate.denominator}"
 
 
+# true when ffmpeg advertises the nvenc h264 encoder
+def nvenc_available() -> bool:
+    out = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True
+    )
+    return "h264_nvenc" in out.stdout
+
+
+# return video encoder args keeping libx264 as the portable cross platform default
+def video_encoder_args(
+    codec: str, draft: bool = False, preview: bool = False
+) -> list[str]:
+    if codec == "h264_nvenc":
+        if draft:
+            return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+                    "-cq", "28", "-b:v", "0"]
+        if preview:
+            return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
+                    "-cq", "24", "-b:v", "0"]
+        return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq",
+                "-rc", "vbr", "-cq", "21", "-b:v", "0"]
+    if draft:
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+    if preview:
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", "22"]
+    return ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
+
+
 # read the source frame rate from ffprobe preferring the average rate
 def probe_source_fps(video: Path) -> str | None:
     """Return an ffmpeg-ready source rate, preferring the average frame rate.
@@ -253,6 +281,7 @@ def extract_segment(
     preview: bool = False,
     draft: bool = False,
     rate: str | None = None,
+    codec: str = "libx264",
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
@@ -266,12 +295,13 @@ def extract_segment(
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # scale by height for portrait sources so orientation is preserved
+    # scale the long edge down but never upscale a smaller source
     portrait = is_portrait_source(source)
-    if draft:
-        scale = "scale=-2:1280" if portrait else "scale=1280:-2"
+    target = 1280 if draft else 1920
+    if portrait:
+        scale = f"scale=-2:'min({target},ih)'"
     else:
-        scale = "scale=-2:1920" if portrait else "scale=1920:-2"
+        scale = f"scale='min({target},iw)':-2"
 
     # tone map hdr first then scale then grade
     vf_parts: list[str] = []
@@ -286,13 +316,6 @@ def extract_segment(
     fade_out_start = max(0.0, duration - 0.03)
     af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.3f}:d=0.03"
 
-    if draft:
-        preset, crf = "ultrafast", "28"
-    elif preview:
-        preset, crf = "medium", "22"
-    else:
-        preset, crf = "fast", "20"
-
     # Frame rate: use the rate the caller resolved once for the whole render
     # (every segment must share it — concat -c copy in Rule 2 requires a uniform
     # frame rate). When called standalone with no rate, preserve this source's
@@ -306,7 +329,7 @@ def extract_segment(
         "-t", f"{duration:.3f}",
         "-vf", vf,
         "-af", af,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf,
+        *video_encoder_args(codec, draft=draft, preview=preview),
         "-pix_fmt", "yuv420p", "-r", out_rate,
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
@@ -322,6 +345,7 @@ def extract_all_segments(
     preview: bool,
     draft: bool = False,
     fps: str | None = None,
+    codec: str = "libx264",
 ) -> list[Path]:
     """Extract every EDL range into edit_dir/clips_graded/seg_NN.mp4.
     Returns the ordered list of segment paths.
@@ -375,7 +399,7 @@ def extract_all_segments(
         print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}")
         if is_auto:
             print(f"        grade: {seg_filter or '(none)'}")
-        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate)
+        extract_segment(src_path, start, duration, seg_filter, out_path, preview=preview, draft=draft, rate=out_rate, codec=codec)
         seg_paths.append(out_path)
 
     return seg_paths
@@ -390,7 +414,9 @@ def concat_segments(segment_paths: list[Path], out_path: Path, edit_dir: Path) -
     out_path.parent.mkdir(parents=True, exist_ok=True)
     concat_list = edit_dir / "_concat.txt"
     # the concat demuxer reads a text file listing each segment path
-    concat_list.write_text("".join(f"file '{p.resolve()}'\n" for p in segment_paths))
+    concat_list.write_text(
+        "".join(f"file '{p.resolve()}'\n" for p in segment_paths), encoding="utf-8"
+    )
 
     cmd = [
         "ffmpeg", "-y",
@@ -463,7 +489,7 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
             seg_offset += seg_duration
             continue
 
-        transcript = json.loads(tr_path.read_text())
+        transcript = json.loads(tr_path.read_text(encoding="utf-8"))
         words_in_seg = _words_in_range(transcript, seg_start, seg_end)
 
         # Group into 2-word chunks, break on punctuation
@@ -507,7 +533,7 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
         lines.append(f"{_srt_timestamp(a)} --> {_srt_timestamp(b)}")
         lines.append(t)
         lines.append("")
-    out_path.write_text("\n".join(lines))
+    out_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"master SRT → {out_path.name} ({len(entries)} cues)")
 
 
@@ -629,6 +655,8 @@ def build_final_composite(
     subtitles_path: Path | None,
     out_path: Path,
     edit_dir: Path,
+    force_style: str = SUB_FORCE_STYLE,
+    codec: str = "libx264",
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
 
@@ -667,9 +695,14 @@ def build_final_composite(
 
     # Subtitles LAST — Rule 1
     if has_subs:
-        subs_abs = str(subtitles_path.resolve()).replace(":", r"\:").replace("'", r"\'")
+        subs_abs = (
+            str(subtitles_path.resolve())
+            .replace("\\", "/")
+            .replace(":", r"\:")
+            .replace("'", r"\'")
+        )
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{SUB_FORCE_STYLE}'[outv]"
+            f"{current}subtitles='{subs_abs}':force_style='{force_style}'[outv]"
         )
         out_label = "[outv]"
     else:
@@ -688,7 +721,7 @@ def build_final_composite(
         "-filter_complex", filter_complex,
         "-map", out_label,
         "-map", "0:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        *video_encoder_args(codec),
         "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
@@ -746,7 +779,7 @@ def main() -> None:
     if not edl_path.exists():
         sys.exit(f"edl not found: {edl_path}")
 
-    edl = json.loads(edl_path.read_text())
+    edl = json.loads(edl_path.read_text(encoding="utf-8"))
     edit_dir = edl_path.parent
     out_path = args.output.resolve()
 
