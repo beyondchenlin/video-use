@@ -31,7 +31,7 @@ These are the things where deviation produces silent failures or broken output. 
 10. **Parallel sub-agents for multiple animations.** Never sequential. Spawn N at once via the `Agent` tool; total wall time ≈ slowest one.
 11. **Strategy confirmation before execution.** Never touch the cut until the user has approved the plain-English plan.
 12. **All session outputs in `<videos_dir>/edit/`.** Never write inside the `video-use/` project directory.
-13. **The fast lane is opt-in and mechanical.** `fast_pipeline.py` runs unattended with deterministic filler/silence cuts and no semantic review; use it only when the user explicitly wants speed over craft. The conversational reviewed process stays the default for anything needing judgment.
+13. **The fast lane is opt-in and mechanical.** `fast_pipeline.py` runs unattended with deterministic filler/silence cuts and no semantic review; use it only when the user explicitly wants speed over craft. The conversational reviewed process stays the default for anything needing judgment. When the user hands over a single talking-head video and asks you to cut it with no creative brief ("帮我剪辑这个口播视频", "帮我剪一下", "快速剪一下", "不用问"), run the one-shot quick mode in `references/quick-mode.md`: one command, defaults only, no strategy round before it runs.
 
 Everything else in this document is a worked example. Deviate whenever the material calls for it.
 
@@ -96,7 +96,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`precut.py <video> -o <out>`** — mechanical silence/breath removal: conditionally bakes phone rotation then runs auto-editor, nvenc when available.
 - **`auto_edl.py <transcript.json> -o <edl.json>`** — deterministic cut builder: drops standalone fillers (zh/en) and long silences, keeps natural short pauses, never cuts inside a word.
-- **`fast_pipeline.py <video>`** — unattended fast lane in one process: precut → transcribe → auto_edl → render → post-cut re-transcribe (model loaded once) → burn sentence subtitles. GPU (nvenc + CUDA) when present. See `references/fast-route.md`.
+- **`fast_pipeline.py <video>`** — unattended fast lane in one process: precut → transcribe → auto_edl → render → post-cut re-transcribe (model loaded once) → burn sentence subtitles. GPU (nvenc + CUDA) when present. See `references/fast-route.md`. One-sentence, no-questions variant for chat: `references/quick-mode.md`.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
 
 For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a sub-agent via the `Agent` tool.
